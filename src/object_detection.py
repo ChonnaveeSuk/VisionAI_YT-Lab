@@ -1,130 +1,77 @@
 import cv2
-import torch
-import numpy as np
-import pandas as pd
-import json
-import yt_dlp
 import os
 import datetime
-from ultralytics import YOLO
+import random
+from telebot import TeleBot
+from dotenv import load_dotenv
+from youtube_downloader import download_youtube_video  # ✅ ใช้สำหรับดาวน์โหลดวิดีโอ YouTube
+from ultralytics import YOLO  # ✅ ใช้ YOLOv8 โดยตรง
 
-# กำหนดโฟลเดอร์สำหรับบันทึกไฟล์
-output_webcam_dir = "C:/Vision_AI_YT/Output_Webcam"
-output_ytvideo_dir = "C:/Vision_AI_YT/Output_YTvideo"
-yt_info_dir = "C:/Vision_AI_YT/Youtube_Video_Info"
-os.makedirs(output_webcam_dir, exist_ok=True)
-os.makedirs(output_ytvideo_dir, exist_ok=True)
-os.makedirs(yt_info_dir, exist_ok=True)
+# ✅ โหลด Token ของ Telegram Bot
+load_dotenv()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+bot = TeleBot(TELEGRAM_BOT_TOKEN)
 
-# โหลดโมเดล YOLOv8
-model = YOLO("yolov8n.pt")
+# ✅ ตรวจสอบโฟลเดอร์สำหรับบันทึกวิดีโอ
+output_dir = "C:/Vision_AI_YT/Output_Processed"
+os.makedirs(output_dir, exist_ok=True)
 
-# ฟังก์ชันดาวน์โหลดวิดีโอจาก YouTube ใหม่ทุกครั้ง
-def download_youtube_video(youtube_url):
-    assert isinstance(youtube_url, str) and youtube_url.startswith("http"), "❌ Debug: youtube_url ไม่ถูกต้อง"
-    print(f"\n✅ Debug: ดาวน์โหลดวิดีโอจากลิงก์ → {youtube_url}")
+# ✅ โหลดโมเดล YOLOv8 Nano Model
+model_path = "C:/Vision_AI_YT/yolov8n.pt"
+model = YOLO(model_path)
 
-    output_path = os.path.join(output_ytvideo_dir, "youtube_video.mp4")
+# ✅ ฟังก์ชันสุ่มสีให้ Bounding Box แต่ละวัตถุ
+def get_random_color():
+    return (random.randint(50, 255), random.randint(50, 255), random.randint(50, 255))  # ✅ สีที่อ่านง่าย
 
-    # ลบไฟล์เก่าเพื่อป้องกันปัญหาคลิปซ้ำ
-    if os.path.exists(output_path):
-        os.remove(output_path)
-
-    ydl_opts = {
-        'format': 'best[ext=mp4]',
-        'outtmpl': output_path,
-        'quiet': False,
-        'noprogress': True,
-        'nocheckcertificate': True,
-        'retries': 3,  # ลองใหม่หากดาวน์โหลดล้มเหลว
-    }
-    
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(youtube_url, download=True)
-
-    video_title = info.get("title", "UnknownTitle").replace(" ", "_")
-    channel = info.get("uploader", "UnknownChannel")
-    views = info.get("view_count", 0)
-    likes = info.get("like_count", 0)
-    comments = info.get("comment_count", 0)
-
-    # สร้างไฟล์ CSV และ JSON
-    csv_path = os.path.join(yt_info_dir, f"{video_title}-Info.csv")
-    json_path = os.path.join(yt_info_dir, f"{video_title}-Info.json")
-
-    video_info = {
-        "Title": video_title,
-        "Channel": channel,
-        "Views": views,
-        "Likes": likes,
-        "Comments": comments
-    }
-    
-    df = pd.DataFrame([video_info])
-    df.to_csv(csv_path, index=False)
-    with open(json_path, "w") as f:
-        json.dump(video_info, f, indent=4)
-
-    return output_path, video_title
-
-# ฟังก์ชันสร้างสีไม่ซ้ำกันสำหรับ bounding box
-def get_color(index):
-    np.random.seed(index)
-    return tuple(np.random.randint(0, 255, 3).tolist())
-
-def detect_objects(source="webcam", save_video=False, youtube_url=None):
-    """ ตรวจจับวัตถุจาก Webcam หรือ YouTube Video และบันทึกอัตโนมัติ """
+# ✅ ฟังก์ชันตรวจจับวัตถุ (รองรับ YouTube และ Webcam)
+def recognize_objects(source="webcam", save_video=False, youtube_url=None, chat_id=None):
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    output_path = os.path.join(output_dir, f"Object_Detection_{timestamp}.mp4")
 
-    if source == "webcam":
-        cap = cv2.VideoCapture(0)
-        output_path = os.path.join(output_webcam_dir, f"Object_detection_{timestamp}.mp4")
-    elif source == "youtube":
-        assert youtube_url is not None, "❌ Debug: youtube_url เป็น None"
-        source, video_title = download_youtube_video(youtube_url)
-        output_path = os.path.join(output_ytvideo_dir, f"{video_title}-Object_detection_{timestamp}.mp4")
-        cap = cv2.VideoCapture(source)
+    if source == "youtube":
+        video_path = download_youtube_video(youtube_url)  # ✅ ดาวน์โหลดวิดีโอ YouTube
+        cap = cv2.VideoCapture(video_path)
     else:
-        print("❌ Debug: แหล่งข้อมูลไม่ถูกต้อง")
-        return
+        cap = cv2.VideoCapture(0)  # ✅ ใช้ Webcam
 
+    frame_width, frame_height = int(cap.get(3)), int(cap.get(4))
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, 20.0, (640, 480)) if save_video else None
+    out = cv2.VideoWriter(output_path, fourcc, 20.0, (frame_width, frame_height)) if save_video else None
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
 
-        results = model(frame)
+        results = model(frame)  # ✅ รันโมเดล YOLOv8 บนเฟรม
 
         for result in results:
-            boxes = result.boxes.xyxy
-            confidences = result.boxes.conf
-            class_ids = result.boxes.cls
+            for box in result.boxes:
+                x1, y1, x2, y2 = map(int, box.xyxy[0])  # ✅ ค่าตำแหน่ง Bounding Box
+                conf = box.conf[0].item()  # ✅ ความมั่นใจ
+                cls = int(box.cls[0].item())  # ✅ ประเภทของวัตถุ
+                label = f"{model.names[cls]} {conf:.2f}"  # ✅ ชื่อวัตถุ + ความมั่นใจ
+                color = get_random_color()
 
-            for i, (box, conf, class_id) in enumerate(zip(boxes, confidences, class_ids)):
-                x1, y1, x2, y2 = map(int, box.tolist())
-                conf = round(float(conf) * 100, 1)  # แปลงเป็น %
-                class_name = result.names[int(class_id)]
-                label = f"{class_name} {conf}%"
-                color = get_color(int(class_id))
-
-                # วาด bounding box และแสดงชื่อวัตถุ
+                # ✅ วาด Bounding Box และ Label บนภาพ
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+                cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
         if save_video:
             out.write(frame)
 
-        cv2.imshow("Object Detection", frame)
+        cv2.imshow("YOLOv8 Object Detection", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q") or key == ord("Q"):
+            print("\n✅ Exporting Video...")
+            cap.release()
+            if save_video:
+                out.release()
+                bot.send_message(chat_id, "✅ Exported Processed Video!")
+                with open(output_path, "rb") as video:
+                    bot.send_video(chat_id, video)
             break
-
-    cap.release()
-    if save_video:
-        out.release()
-        print(f"\n✅ วิดีโอถูกบันทึกที่: {output_path}")
 
     cv2.destroyAllWindows()
